@@ -1,0 +1,49 @@
+# NoteTube AI -- local/self-hosted deployment
+#
+# Usage:
+#   1. Create backend/.env from backend/.env.example and set GROQ_API_KEY.
+#   2. docker compose up --build
+#   3. Open http://localhost:5173
+#
+# This is meant for running the whole app on one machine (a VPS, your own
+# server, or your laptop) with one command. It is NOT what's used for the
+# split cloud deployment in the README (Hugging Face Spaces + Vercel) --
+# that's covered separately, since those platforms build the images
+# themselves rather than running docker-compose directly.
+
+services:
+  backend:
+    build:
+      context: ./backend
+    env_file:
+      - ./backend/.env
+    ports:
+      - "8000:8000"
+    volumes:
+      # Persist processed videos and cached transcripts across restarts,
+      # instead of losing everything when the container is recreated.
+      - faiss_indexes:/app/faiss_indexes
+      - transcript_cache:/app/transcript_cache
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/docs')"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        # The browser calls this URL directly, so it must be reachable from
+        # wherever the person's browser runs -- not the "backend" service
+        # name, which only resolves inside Docker's internal network.
+        VITE_API_BASE_URL: http://localhost:8000/api
+    ports:
+      - "5173:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+
+volumes:
+  faiss_indexes:
+  transcript_cache:

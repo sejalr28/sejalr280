@@ -12,7 +12,10 @@
 
 import axios from "axios";
 
-const API_BASE_URL = "http://localhost:8000/api";
+// In dev this defaults to the local backend. In a deployed build, set
+// VITE_API_BASE_URL at build time (see docker-compose.yml / README) to
+// point at the real backend URL instead.
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000/api";
 
 const apiClient = axios.create({
   baseURL: API_BASE_URL,
@@ -20,15 +23,44 @@ const apiClient = axios.create({
 });
 
 /**
- * Sends a YouTube URL to the backend for full processing:
- * transcript fetch -> chunking -> embedding -> FAISS storage.
+ * Submits a YouTube URL for background processing (transcript fetch ->
+ * chunking -> embedding -> FAISS storage) and returns immediately.
+ * Returns { job_id, status }. Use pollVideoJob to wait for the result.
  */
-export async function processVideo(youtubeUrl) {
+export async function submitVideo(youtubeUrl) {
   const response = await apiClient.post("/video/process", {
     youtube_url: youtubeUrl,
   });
-  // { video_id, title, thumbnail_url, num_chunks, processing_time_seconds, message }
   return response.data;
+}
+
+/** One-shot job status check. */
+export async function getVideoJob(jobId) {
+  const response = await apiClient.get(`/video/jobs/${jobId}`);
+  // { job_id, status: "pending"|"processing"|"done"|"error", stage, result, error }
+  return response.data;
+}
+
+/**
+ * Submits a video and polls until it finishes, calling onStage(stage) after
+ * every poll so the UI can show real progress. Resolves with the result on
+ * success; rejects with an Error (message = the backend's error detail) on
+ * failure or if it doesn't finish within maxWaitMs.
+ */
+export async function processVideo(youtubeUrl, onStage = () => {}, { intervalMs = 800, maxWaitMs = 300000 } = {}) {
+  const { job_id: jobId } = await submitVideo(youtubeUrl);
+  const deadline = Date.now() + maxWaitMs;
+
+  while (Date.now() < deadline) {
+    const job = await getVideoJob(jobId);
+    onStage(job.stage);
+
+    if (job.status === "done") return job.result;
+    if (job.status === "error") throw new Error(job.error || "Processing failed.");
+
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
+  throw new Error("This is taking longer than expected. Please try again.");
 }
 
 /**

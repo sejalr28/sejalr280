@@ -44,7 +44,7 @@ class Settings(BaseSettings):
     # --- Retrieval upgrades ---
     # Switch these on/off to compare them with the eval harness (python -m eval.run_eval).
     USE_HYBRID: bool = False     # add BM25 keyword search, fused with dense search (RRF)
-    USE_RERANKER: bool = True   # rerank candidates with a cross-encoder
+    USE_RERANKER: bool = False   # rerank candidates with a cross-encoder
     CANDIDATE_POOL: int = 20     # candidates gathered from each search before fusing/reranking
     RERANKER_MODEL: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
 
@@ -54,6 +54,15 @@ class Settings(BaseSettings):
     # --- FAISS index storage location ---
     # Each processed video gets its own index file + metadata file saved here.
     FAISS_INDEX_DIR: str = "./faiss_indexes"
+
+    # --- Caching ---
+    # Raw transcripts rarely change, so we cache them on disk to avoid
+    # re-hitting YouTube (which rate-limits/blocks aggressively, especially
+    # from cloud IPs) every time a video is re-processed or re-summarized.
+    TRANSCRIPT_CACHE_DIR: str = "./transcript_cache"
+    # Max FAISS indexes kept in memory at once (least-recently-used evicted).
+    # Avoids re-reading the index file from disk on every single question.
+    INDEX_CACHE_SIZE: int = 32
 
     class Config:
         env_file = ".env"

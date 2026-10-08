@@ -1,23 +1,21 @@
-# --- Environment / secrets ---
-.env
-*.env
-!.env.example
-
-# --- Python ---
-__pycache__/
+# --- Python / backend ---
+backend/venv/
+backend/__pycache__/
+backend/**/__pycache__/
 *.pyc
-venv/
-.venv/
-*.egg-info/
 
-# --- Generated data (regenerated locally, never committed) ---
-backend/faiss_indexes/*.index
-backend/faiss_indexes/*.json
-!backend/faiss_indexes/.gitkeep
+# Secrets -- never commit this. Keep backend/.env.example in git instead.
+backend/.env
+
+# Generated at runtime -- not source code, shouldn't be versioned.
+backend/faiss_indexes/
+backend/transcript_cache/
+backend/eval/results/
 
 # --- Node / frontend ---
-node_modules/
+frontend/node_modules/
 frontend/dist/
+frontend/.vite/
 
 # --- Editor / OS ---
 .vscode/

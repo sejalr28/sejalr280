@@ -2,22 +2,19 @@
  * ProcessingSteps.jsx
  * ---------------------
  * Shows the RAG pipeline stages while a video is being processed:
- * transcript -> embeddings -> FAISS index -> summary.
+ * transcript -> embeddings -> FAISS index.
  *
  * Note: /api/video/process is a single synchronous backend call, so we
  * don't get real per-stage progress from the server. We advance through
- * the first three labels on a timer while that request is in flight
- * (a common, honest UX pattern for showing what a backend pipeline is
- * conceptually doing), then show the final "Generating summary..." step
- * for real once processing succeeds and the separate summarize call is
- * actually in flight.
+ * the labels on a timer while that request is in flight (a common, honest
+ * UX pattern for showing what a backend pipeline is conceptually doing).
+ * The summary is generated afterwards, inside the workspace.
  */
 
 const STEPS = [
   "Fetching transcript...",
   "Creating embeddings...",
   "Building FAISS index...",
-  "Generating summary...",
 ];
 
 function ProcessingSteps({ currentStepIndex }) {

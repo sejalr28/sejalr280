@@ -1,92 +1,98 @@
 /**
  * App.jsx
  * --------
- * Root component. Owns all shared state (video metadata, summary, chat
- * history) and coordinates calls to the backend via services/api.js.
+ * Root component with two pages:
+ *   - Home: what the app does, plus the URL box that processes a video
+ *   - Workspace: the processed video, split into sections (see Workspace.jsx)
  *
- * Keeping state here (instead of scattering it across children) is a
- * simple, beginner-friendly form of "lifting state up" -- a core React
- * pattern worth being able to explain in an interview.
+ * App owns the state shared by both pages (video metadata, summary, chat
+ * history) and coordinates calls to the backend via services/api.js.
  */
 
 import { useState, useRef } from "react";
-import VideoInput from "./components/VideoInput";
-import VideoSuccessCard from "./components/VideoSuccessCard";
-import SummaryPanel from "./components/SummaryPanel";
-import StudyPanel from "./components/StudyPanel";
-import ChatBox from "./components/ChatBox";
+
+// Maps the backend job's `stage` string to a step index for ProcessingSteps.
+const STAGE_TO_STEP = {
+  queued: 0,
+  fetching_transcript: 0,
+  chunking: 1,
+  embedding_and_indexing: 2,
+};
+import HomePage from "./components/HomePage";
+import Workspace from "./components/Workspace";
 import { processVideo, askQuestion, summarizeVideo } from "./services/api";
 
-// Index of the "Generating summary..." step in ProcessingSteps' step list.
-// Kept in sync with components/ProcessingSteps.jsx's STEPS array.
-const SUMMARY_STEP_INDEX = 3;
-
 function App() {
+  const [view, setView] = useState("home"); // "home" | "workspace"
   const [videoMeta, setVideoMeta] = useState(null); // { videoId, title, thumbnailUrl, numChunks, processingTimeSeconds }
 
   const [isProcessing, setIsProcessing] = useState(false);
   const [currentStepIndex, setCurrentStepIndex] = useState(0);
   const [processError, setProcessError] = useState("");
-  const stepIntervalRef = useRef(null);
+  const activeVideoRef = useRef(null); // ignores summary results that arrive after a newer video started
 
   const [summary, setSummary] = useState("");
   const [chapters, setChapters] = useState([]);
   const [isSummarizing, setIsSummarizing] = useState(false);
+  const [summaryError, setSummaryError] = useState("");
 
   const [messages, setMessages] = useState([]);
   const [isAsking, setIsAsking] = useState(false);
 
+  const loadSummary = async (videoId) => {
+    setSummaryError("");
+    setIsSummarizing(true);
+    try {
+      const result = await summarizeVideo(videoId);
+      if (activeVideoRef.current !== videoId) return;
+      setSummary(result.summary);
+      setChapters(result.chapters || []);
+    } catch (err) {
+      if (activeVideoRef.current !== videoId) return;
+      setSummaryError(err?.response?.data?.detail || "Could not generate the summary.");
+    } finally {
+      if (activeVideoRef.current === videoId) setIsSummarizing(false);
+    }
+  };
+
   /**
    * Full "process video" flow:
-   *   1. Call backend to fetch transcript, chunk, embed, store in FAISS
-   *   2. On success, immediately kick off summary generation
-   *
-   * The backend does step 1 as a single synchronous call, so we simulate
-   * progress through its sub-stages on a timer purely for UX -- see
-   * ProcessingSteps.jsx for details on why.
+   *   1. Submit the URL; the backend processes it as a background job while
+   *      we poll for status (see processVideo in services/api.js) and turn
+   *      each real `stage` the job reports into a step index for the UI.
+   *   2. On success, open the workspace right away (chat works as soon as the
+   *      video is indexed) and generate the summary in the background.
    */
   const handleProcessVideo = async (youtubeUrl) => {
     setIsProcessing(true);
     setProcessError("");
+    setCurrentStepIndex(0);
+
+    let result;
+    try {
+      result = await processVideo(youtubeUrl, (stage) => {
+        setCurrentStepIndex(STAGE_TO_STEP[stage] ?? 0);
+      });
+    } catch (err) {
+      setProcessError(err?.response?.data?.detail || err?.message || "Something went wrong. Please try again.");
+      return;
+    } finally {
+      setIsProcessing(false);
+    }
+
+    activeVideoRef.current = result.video_id;
     setSummary("");
     setChapters([]);
     setMessages([]);
-    setVideoMeta(null);
-    setCurrentStepIndex(0);
-
-    // Cycle through the first 3 step labels while the request is in
-    // flight. Capped at index 2 so it never races ahead of the real
-    // "Generating summary..." step, which is triggered for real below.
-    stepIntervalRef.current = setInterval(() => {
-      setCurrentStepIndex((prev) => (prev < 2 ? prev + 1 : prev));
-    }, 900);
-
-    try {
-      const result = await processVideo(youtubeUrl);
-      clearInterval(stepIntervalRef.current);
-
-      setVideoMeta({
-        videoId: result.video_id,
-        title: result.title,
-        thumbnailUrl: result.thumbnail_url,
-        numChunks: result.num_chunks,
-        processingTimeSeconds: result.processing_time_seconds,
-      });
-
-      // Real step now -- the summarize call is actually in flight.
-      setCurrentStepIndex(SUMMARY_STEP_INDEX);
-      setIsSummarizing(true);
-      const summaryResult = await summarizeVideo(result.video_id);
-      setSummary(summaryResult.summary);
-      setChapters(summaryResult.chapters || []);
-    } catch (err) {
-      clearInterval(stepIntervalRef.current);
-      const detail = err?.response?.data?.detail || "Something went wrong. Please try again.";
-      setProcessError(detail);
-    } finally {
-      setIsProcessing(false);
-      setIsSummarizing(false);
-    }
+    setVideoMeta({
+      videoId: result.video_id,
+      title: result.title,
+      thumbnailUrl: result.thumbnail_url,
+      numChunks: result.num_chunks,
+      processingTimeSeconds: result.processing_time_seconds,
+    });
+    setView("workspace");
+    loadSummary(result.video_id);
   };
 
   /**
@@ -119,65 +125,59 @@ function App() {
 
   const handleClearChat = () => setMessages([]);
 
+  const showWorkspace = view === "workspace" && videoMeta;
+
   return (
     <div className="app-shell">
-      <header className="app-header">
-        <div className="app-header-mark">▶</div>
-        <div>
-          <h1 className="app-title">NoteTube AI</h1>
-          <p className="app-subtitle">YouTube Learning Assistant</p>
-        </div>
+      <header className="topbar">
+        <button className="brand" onClick={() => setView("home")} aria-label="Home">
+          <div className="app-header-mark">▶</div>
+          <div>
+            <h1 className="app-title">NoteTube AI</h1>
+            {!showWorkspace && <p className="app-subtitle">YouTube Learning Assistant</p>}
+          </div>
+        </button>
+
+        {showWorkspace && (
+          <>
+            <span className="topbar-video">{videoMeta.title}</span>
+            <button className="panel-action-btn" onClick={() => setView("home")}>
+              + New video
+            </button>
+          </>
+        )}
       </header>
 
-      <main className="app-main">
-        <section className="app-column">
-          <VideoInput
+      <main className="app-content">
+        {/* Workspace stays mounted (just hidden) while on Home, so nothing is lost. */}
+        {videoMeta && (
+          <div hidden={!showWorkspace}>
+            <Workspace
+              key={videoMeta.videoId}
+              videoMeta={videoMeta}
+              summary={summary}
+              chapters={chapters}
+              isSummarizing={isSummarizing}
+              summaryError={summaryError}
+              onRetrySummary={() => loadSummary(videoMeta.videoId)}
+              messages={messages}
+              isAsking={isAsking}
+              onAskQuestion={handleAskQuestion}
+              onClearChat={handleClearChat}
+            />
+          </div>
+        )}
+
+        {!showWorkspace && (
+          <HomePage
             onProcessVideo={handleProcessVideo}
             isProcessing={isProcessing}
             currentStepIndex={currentStepIndex}
+            error={processError}
+            resumeTitle={videoMeta?.title}
+            onResume={() => setView("workspace")}
           />
-
-          {processError && (
-            <div className="alert-card alert-card--error">{processError}</div>
-          )}
-
-          {videoMeta && !processError && (
-            <VideoSuccessCard
-              title={videoMeta.title}
-              thumbnailUrl={videoMeta.thumbnailUrl}
-              numChunks={videoMeta.numChunks}
-              processingTimeSeconds={videoMeta.processingTimeSeconds}
-            />
-          )}
-
-          <SummaryPanel
-            videoId={videoMeta?.videoId}
-            summary={summary}
-            chapters={chapters}
-            isLoading={isSummarizing}
-          />
-
-          {videoMeta && !processError && (
-            <StudyPanel
-              key={videoMeta.videoId}
-              videoId={videoMeta.videoId}
-              title={videoMeta.title}
-              summary={summary}
-              chapters={chapters}
-            />
-          )}
-        </section>
-
-        <section className="app-column">
-          <ChatBox
-            videoId={videoMeta?.videoId}
-            messages={messages}
-            onAskQuestion={handleAskQuestion}
-            onClearChat={handleClearChat}
-            isAsking={isAsking}
-            disabled={!videoMeta}
-          />
-        </section>
+        )}
       </main>
 
       <footer className="app-footer">

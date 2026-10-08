@@ -28,6 +28,9 @@ cosine-based search out of FAISS's simpler index types.
 
 import os
 import json
+import threading
+from collections import OrderedDict
+
 import faiss
 import numpy as np
 
@@ -36,6 +39,36 @@ from app.services.embedding_service import embed_texts, embed_query
 
 # Ensure the storage directory exists at startup.
 os.makedirs(settings.FAISS_INDEX_DIR, exist_ok=True)
+
+# In-memory LRU cache of loaded (index, metadata) pairs, keyed by video_id.
+# Without this, every single chat question or eval question re-reads the
+# FAISS index file from disk, which gets slow once the app has many
+# processed videos or is fielding concurrent requests.
+# OrderedDict gives us O(1) "move to end" for LRU tracking; a lock guards
+# it since FastAPI can serve requests from multiple threads at once.
+_cache_lock = threading.Lock()
+_index_cache: "OrderedDict[str, tuple]" = OrderedDict()
+
+
+def _cache_get(video_id: str):
+    with _cache_lock:
+        if video_id not in _index_cache:
+            return None
+        _index_cache.move_to_end(video_id)  # mark as most-recently-used
+        return _index_cache[video_id]
+
+
+def _cache_put(video_id: str, value: tuple) -> None:
+    with _cache_lock:
+        _index_cache[video_id] = value
+        _index_cache.move_to_end(video_id)
+        while len(_index_cache) > settings.INDEX_CACHE_SIZE:
+            _index_cache.popitem(last=False)  # evict least-recently-used
+
+
+def _cache_evict(video_id: str) -> None:
+    with _cache_lock:
+        _index_cache.pop(video_id, None)
 
 
 def _index_path(video_id: str) -> str:
@@ -88,9 +121,21 @@ def store_chunks(video_id: str, chunks: list[dict]) -> None:
     with open(_metadata_path(video_id), "w", encoding="utf-8") as f:
         json.dump(metadata, f)
 
+    # The video may have been processed before -- drop any stale cached
+    # copy so the next load_video() picks up the freshly written files.
+    _cache_evict(video_id)
+
 
 def load_video(video_id: str):
-    """Loads a video's FAISS index and its chunk metadata (text + start_time)."""
+    """
+    Loads a video's FAISS index and its chunk metadata (text + start_time).
+    Cached in memory (see _index_cache above) so repeated questions about
+    the same video don't re-read from disk each time.
+    """
+    cached = _cache_get(video_id)
+    if cached is not None:
+        return cached
+
     index_path = _index_path(video_id)
     metadata_path = _metadata_path(video_id)
 
@@ -103,6 +148,8 @@ def load_video(video_id: str):
     index = faiss.read_index(index_path)
     with open(metadata_path, "r", encoding="utf-8") as f:
         metadata = json.load(f)
+
+    _cache_put(video_id, (index, metadata))
     return index, metadata
 
 

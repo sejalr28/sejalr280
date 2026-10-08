@@ -57,6 +57,26 @@ class VideoProcessResponse(BaseModel):
     message: str
 
 
+class VideoJobCreated(BaseModel):
+    """Returned immediately when a video is submitted for background processing."""
+    job_id: str
+    status: str = "pending"
+
+
+class VideoJobStatus(BaseModel):
+    """
+    Returned when polling a processing job.
+    `stage` is a short machine-readable label for the frontend to map to a
+    display string (e.g. "fetching_transcript" -> "Fetching transcript...").
+    `result` is populated only once status == "done".
+    """
+    job_id: str
+    status: str   # "pending" | "processing" | "done" | "error"
+    stage: str
+    result: VideoProcessResponse | None = None
+    error: str | None = None
+
+
 class Source(BaseModel):
     """A transcript chunk used to ground an answer, with where it starts in the video."""
     text: str
